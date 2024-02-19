@@ -1,4 +1,4 @@
-package hello_world
+package helloWorld
 
 func GetGreeting() string {
 	const greeting string = "Hello, World!"

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"LearningGo/error_handling"
+	"LearningGo/errorHandling"
 )
 
 const minimumAge int = 10
@@ -16,14 +16,14 @@ type User struct {
 
 func (u *User) getName() {
 	print("Enter your name: ")
-	err := error_handling.CatchInputError(fmt.Scan(&u.name))
+	err := errorHandling.CatchInputError(fmt.Scan(&u.name))
 	print(err)
 	fmt.Printf("Hello, %s! Let's get started!\n", u.name)
 }
 
 func (u *User) getAge() {
 	print("Enter your age: ")
-	error_handling.CatchInputError(fmt.Scan(&u.age))
+	errorHandling.CatchInputError(fmt.Scan(&u.age))
 	if u.age < minimumAge {
 		println("You are too young to play this game!")
 		os.Exit(1)
