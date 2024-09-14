@@ -23,9 +23,13 @@ func main() {
 	defer func(logFile *os.File) {
 		_ = logFile.Close()
 	}(logFile)
-
 	log.SetOutput(logFile)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("Recovered in f", "r", r)
+		}
+	}()
 	concurrencyExample.DoDbCall()
 }
