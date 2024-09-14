@@ -37,7 +37,7 @@ func canMakeIt(e engine, miles uint8) {
 	}
 }
 
-func ExampleInterfaceUsage() {
+func Example() {
 	println("This is the interfaceExample package")
 	var myEngine gasEngine = gasEngine{mpg: 30, gallons: 10, owner: owner{name: "John"}}
 	fmt.Println(myEngine.mpg, myEngine.gallons, myEngine.owner.name)

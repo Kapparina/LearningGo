@@ -2,56 +2,58 @@ package concurrencyExample
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
 
-var m = sync.RWMutex{}
-var wg = sync.WaitGroup{}
-var dbData = []string{"id1", "id2", "id3", "id4", "id5", "id6", "id7", "id8", "id9", "id10"}
-var results []string
+const (
+	iterCount int = 1000
+)
+
+var (
+	m       = sync.RWMutex{}
+	wg      = sync.WaitGroup{}
+	dbData  = []string{"id1", "id2", "id3", "id4", "id5", "id6", "id7", "id8", "id9", "id10"}
+	results []string
+)
 
 func DoDbCall() {
 	t0 := time.Now()
-	for i := 0; i < 1000; i++ {
-		wg.Add(1)
-		go dbCall(i)
+	wg.Add(iterCount)
+	for i := 0; i < iterCount; i++ {
+		go dbCall(i % len(dbData))
 	}
 	wg.Wait()
-	fmt.Printf("\nTotal Execution Time: %v", time.Since(t0))
 
+	slog.Info("Done!", "time", time.Since(t0))
 }
 
 func DoBigCount() {
 	t0 := time.Now()
-	for i := 0; i < 1000; i++ {
-		wg.Add(1)
+	wg.Add(iterCount)
+	for i := 0; i < iterCount; i++ {
 		go count()
 	}
 	wg.Wait()
-	fmt.Printf("\nTotal Execution Time: %v", time.Since(t0))
+	slog.Info("Done!", "time", time.Since(t0))
 }
 
 func dbCall(i int) {
 	defer wg.Done()
-	// var delay int = rand.Intn(2000)
+	slog.Info("Calling the database", "target record", i)
+	// var delay = rand.Intn(2000)
 	var delay = 2000
 	time.Sleep(time.Duration(delay) * time.Millisecond)
 	fmt.Println("The result from the database is: ", dbData[i])
 	save(dbData[i])
-	log()
+	slog.Info("Retrieved from database", "result #", i, "result", dbData[i])
 }
 
 func save(result string) {
 	m.Lock()
 	results = append(results, result)
 	m.Unlock()
-}
-
-func log() {
-	m.RLock()
-	fmt.Printf("\nThe current results are: %v", results)
-	m.RUnlock()
 }
 
 func count() {

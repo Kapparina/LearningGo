@@ -1,5 +1,31 @@
 package main
 
-func main() {
+import (
+	"log"
+	"log/slog"
+	"os"
+	"path/filepath"
 
+	"LearningGo/concurrencyExample"
+)
+
+func main() {
+	logFile, err := os.OpenFile(
+		filepath.Join(os.TempDir(), "LearningLog.log"),
+		os.O_RDWR|os.O_CREATE|os.O_APPEND,
+		0666,
+	)
+	if err != nil {
+		slog.Error(err.Error())
+	} else {
+		slog.Info("Log file opened successfully", "file", logFile.Name())
+	}
+	defer func(logFile *os.File) {
+		_ = logFile.Close()
+	}(logFile)
+
+	log.SetOutput(logFile)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
+	concurrencyExample.DoDbCall()
 }
