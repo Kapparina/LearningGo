@@ -32,5 +32,5 @@ func main() {
 			slog.Error("Recovered in f", "r", r)
 		}
 	}()
-	socketServer.StartServer()
+	socketServer.Example()
 }
