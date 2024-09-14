@@ -1,4 +1,4 @@
-package errorHandling
+package userInputExample
 
 import "fmt"
 
