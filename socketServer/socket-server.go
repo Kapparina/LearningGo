@@ -7,12 +7,20 @@ import (
 	"net"
 )
 
-const response string = "Message received!"
+const (
+	port     int    = 8080
+	response string = "Message received!"
+)
 
 type signal struct{}
 
 func StartServer() {
-	listener, err := net.Listen("tcp", ":8080")
+	tcpAddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort("", "8080"))
+	if err != nil {
+		slog.Error("Error resolving address", "error", err)
+		panic(err)
+	}
+	listener, err := net.ListenTCP("tcp4", tcpAddr)
 	if err != nil {
 		panic(err)
 	}
@@ -43,7 +51,7 @@ func handleConnection(conn net.Conn, semaphore chan signal) {
 	}(conn)
 	defer func() { <-semaphore }()
 
-	slog.Info("New connection accepted", "remote_addr", conn.RemoteAddr())
+	slog.Info("New connection accepted", "remote_addr", conn.RemoteAddr(), "local_addr", conn.LocalAddr())
 
 	var (
 		buf    = make([]byte, 1024)
@@ -54,15 +62,17 @@ readLoop:
 	for {
 		idx, err := reader.Read(buf)
 
-		if err != nil {
-			if err == io.EOF {
-				break readLoop
+		switch err {
+		case nil:
+			if idx > 0 {
+				data := buf[:idx]
+				slog.Info("Received data", "data", string(data))
 			}
+		case io.EOF:
+			break readLoop
+		default:
 			slog.Error("Error reading data", "error", err)
 			return
-		} else if idx > 0 {
-			data := buf[:idx]
-			slog.Info("Received data", "data", string(data))
 		}
 	}
 
@@ -73,5 +83,10 @@ readLoop:
 	if err := writer.Flush(); err != nil {
 		slog.Error("Error flushing data", "error", err)
 	}
-	slog.Info("Connection closed", "connection", conn, "response", response)
+	slog.Info(
+		"Connection closed",
+		"remote_addr", conn.RemoteAddr(),
+		"local_addr", conn.LocalAddr(),
+		"response", response,
+	)
 }

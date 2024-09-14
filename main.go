@@ -1,12 +1,13 @@
 package main
 
 import (
+	"io"
 	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
 
-	"LearningGo/concurrencyExample"
+	"LearningGo/socketServer"
 )
 
 func main() {
@@ -23,7 +24,7 @@ func main() {
 	defer func(logFile *os.File) {
 		_ = logFile.Close()
 	}(logFile)
-	log.SetOutput(logFile)
+	log.SetOutput(io.MultiWriter(os.Stderr, logFile))
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
 	defer func() {
@@ -31,5 +32,5 @@ func main() {
 			slog.Error("Recovered in f", "r", r)
 		}
 	}()
-	concurrencyExample.DoDbCall()
+	socketServer.StartServer()
 }
