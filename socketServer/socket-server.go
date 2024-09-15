@@ -3,6 +3,7 @@ package socketServer
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -30,60 +31,68 @@ func Example() {
 	defer stop()
 
 	// Start the server
-	go startServer(ctx)
+	go func() {
+		if err := startServer(ctx); err != nil {
+			slog.Error("Server error", "error", err)
+		}
+	}()
 
 	// Wait for context cancellation
 	<-ctx.Done()
 	slog.Info("Server received shutdown signal")
 }
 
-func startServer(ctx context.Context) {
+func startServer(ctx context.Context) error {
+	listener, err := createListener()
+	if err != nil {
+		return err
+	}
+	defer closeListener(listener)
+
+	slog.Info("Server started", "address", listener.Addr(), "protocol", listener.Addr().Network())
+	return serve(ctx, listener)
+}
+
+func createListener() (net.Listener, error) {
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", net.JoinHostPort("", port))
 	if err != nil {
 		slog.Error("Error resolving address", "error", err)
-		panic(err)
+		return nil, err
 	}
 
 	listener, err := net.ListenTCP("tcp4", tcpAddr)
 	if err != nil {
 		slog.Error("Error listening", "error", err)
-		return
+		return nil, err
 	}
-	defer func() {
-		if err = listener.Close(); err != nil {
-			slog.Error("Error closing listener", "error", err)
-		}
-	}()
-	slog.Info("Server started", "address", listener.Addr(), "protocol", listener.Addr().Network())
-	serve(ctx, listener)
+	return listener, nil
 }
 
-func serve(ctx context.Context, listener net.Listener) {
+func closeListener(listener net.Listener) {
+	if err := listener.Close(); err != nil {
+		slog.Error("Error closing listener", "error", err)
+	}
+}
+
+func serve(ctx context.Context, listener net.Listener) error {
 	semaphore := make(chan struct{}, 100)
 	for {
 		select {
 		case <-ctx.Done():
-			_ = listener.Close()
 			slog.Info("Context cancelled, closing listener")
-			return
+			return listener.Close()
 		default:
-			// Accept new connections
 			conn, err := listener.Accept()
 			if err != nil {
-				select {
-				case <-ctx.Done():
+				if ctx.Err() != nil {
 					slog.Info("Context cancelled while accepting connection")
-					return
-				default:
-					slog.Error("Error accepting connection", "error", err)
-					continue
+					return ctx.Err()
 				}
+				slog.Error("Error accepting connection", "error", err)
+				continue
 			}
-			slog.Info(
-				"New connection accepted",
-				"remote_addr", conn.RemoteAddr(),
-				"local_addr", conn.LocalAddr(),
-			)
+
+			slog.Info("New connection accepted", "remote_addr", conn.RemoteAddr(), "local_addr", conn.LocalAddr())
 			semaphore <- struct{}{}
 			slog.Info("Connections remaining", "remaining", cap(semaphore)-len(semaphore))
 			go handleConnection(ctx, conn, semaphore)
@@ -93,62 +102,67 @@ func serve(ctx context.Context, listener net.Listener) {
 
 func handleConnection(ctx context.Context, conn net.Conn, semaphore chan struct{}) {
 	defer func() {
-		if err := conn.Close(); err != nil {
-			slog.Error("Error closing connection", "error", err)
-		}
-		slog.Info(
-			"Connection closed",
-			"remote_addr", conn.RemoteAddr(),
-			"local_addr", conn.LocalAddr(),
-		)
+		closeConn(conn)
 		<-semaphore
 	}()
-	var (
-		buf = make([]byte, 1024)
-		rw  = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
-	)
+
+	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+	buf := make([]byte, 1024)
+
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			slog.Info("Context cancelled for connection")
 			_ = handleWrite(ctx, rw, "Server termination requested, goodbye")
 			return
-		default:
-			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-			idx, err := rw.Read(buf)
-			if err != nil {
-				if err == io.EOF {
-					slog.Info("Client disconnected", "remote_addr", conn.RemoteAddr())
-					return
-				}
-				slog.Error("Error reading data", "error", err)
+		}
+
+		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			slog.Error("Error setting read deadline", "error", err)
+			return
+		}
+
+		n, err := rw.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				slog.Info("Client disconnected", "remote_addr", conn.RemoteAddr())
 				return
 			}
-			if idx > 0 {
-				data := buf[:idx]
-				slog.Info("Received data", "data", string(data))
-				_ = handleWrite(ctx, rw, response)
+			var nErr net.Error
+			if errors.As(err, &nErr) && nErr.Timeout() {
+				continue
 			}
+			slog.Error("Error reading data", "error", err)
+			return
+		}
+
+		if n > 0 {
+			data := buf[:n]
+			slog.Info("Received data", "data", string(data))
+			_ = handleWrite(ctx, rw, response)
 		}
 	}
 }
 
 func handleWrite(ctx context.Context, writer *bufio.ReadWriter, msg string) error {
-	select {
-	case <-ctx.Done():
+	if ctx.Err() != nil {
 		slog.Info("Context cancelled before writing data")
 		return ctx.Err()
-	default:
-		// Try to write the message
-		if _, err := writer.Write([]byte(msg)); err != nil {
-			slog.Error("Error writing data", "error", err)
-			return err
-		}
-		// Try to flush the writer
-		if err := writer.Flush(); err != nil {
-			slog.Error("Error flushing data", "error", err)
-			return err
-		}
+	}
+
+	if _, err := writer.Write([]byte(msg)); err != nil {
+		slog.Error("Error writing data", "error", err)
+		return err
+	}
+	if err := writer.Flush(); err != nil {
+		slog.Error("Error flushing data", "error", err)
+		return err
 	}
 	return nil
+}
+
+func closeConn(conn net.Conn) {
+	if err := conn.Close(); err != nil {
+		slog.Error("Error closing connection", "error", err)
+	}
+	slog.Info("Connection closed", "remote_addr", conn.RemoteAddr(), "local_addr", conn.LocalAddr())
 }
