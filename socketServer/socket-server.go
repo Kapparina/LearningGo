@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	port     string = "8080"
-	response string = "Message received!"
+	port     = "8080"
+	response = "Message received!"
 )
 
 func Example() {
@@ -39,6 +39,12 @@ func Example() {
 		if err := startServer(ctx, &wg); err != nil {
 			slog.Error("Server error", "error", err)
 		}
+	}()
+
+	go func() {
+		time.Sleep(5 * time.Second)
+		slog.Info("Testing manual shutdown")
+		stop()
 	}()
 
 	// Wait for context cancellation
@@ -82,38 +88,53 @@ func closeListener(listener net.Listener) {
 }
 
 func serve(ctx context.Context, listener net.Listener, wg *sync.WaitGroup) error {
+	connCh := make(chan net.Conn)
+	go acceptConnections(listener, connCh, ctx)
+
 	// Semaphore to limit the number of concurrent connections
 	semaphore := make(chan struct{}, 100)
+
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("Context cancelled, closing listener and exiting serve loop")
 			return listener.Close()
-		default:
-			conn, err := listener.Accept()
-			if err != nil {
-				if ctx.Err() != nil {
-					slog.Info("Context cancelled while accepting connection")
-					return ctx.Err()
-				}
-				slog.Error("Error accepting connection", "error", err)
-				continue
-			}
-
-			slog.Info("New connection accepted", "remote_addr", conn.RemoteAddr(), "local_addr", conn.LocalAddr())
-
+		case conn := <-connCh:
+			slog.Info("Handling new connection", "remote_addr", conn.RemoteAddr())
 			select {
 			case semaphore <- struct{}{}:
 				// Increment WaitGroup counter
 				wg.Add(1)
 				go func() {
-					defer wg.Done() // Decrement when goroutine is finished
+					defer wg.Done()
 					handleConnection(ctx, conn, semaphore)
 				}()
 			case <-ctx.Done():
 				slog.Info("Context cancelled, not accepting new connections")
 				return listener.Close()
 			}
+		}
+	}
+}
+
+func acceptConnections(listener net.Listener, connCh chan<- net.Conn, ctx context.Context) {
+	defer close(connCh)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				slog.Error("Context cancelled while accepting connection", "error", err)
+				return
+			}
+			slog.Error("Error accepting connection", "error", err)
+			continue
+		}
+		select {
+		case connCh <- conn:
+			slog.Info("Accepted connection sent to channel", "remote_addr", conn.RemoteAddr())
+		case <-ctx.Done():
+			slog.Info("Context cancelled, stopping accept goroutine")
+			return
 		}
 	}
 }
@@ -131,7 +152,8 @@ func handleConnection(ctx context.Context, conn net.Conn, semaphore chan struct{
 		// Check context cancellation before any major operations
 		if ctx.Err() != nil {
 			slog.Info("Context cancelled for connection")
-			err := handleWrite(ctx, rw, "Server termination requested, goodbye")
+			// Send a termination message before closing
+			err := handleNonBlockingWrite(ctx, rw, "Server termination requested, goodbye")
 			if err != nil {
 				slog.Error("Error sending termination message", "error", err)
 			}
@@ -160,14 +182,15 @@ func handleConnection(ctx context.Context, conn net.Conn, semaphore chan struct{
 		if n > 0 {
 			data := buf[:n]
 			slog.Info("Received data", "data", string(data))
-			err := handleWrite(ctx, rw, response)
-			if err != nil {
-				slog.Error("Error writing response", "error", err)
+			writeError := handleWrite(ctx, rw, response)
+			if writeError != nil {
+				slog.Error("Error writing response", "error", writeError)
 			}
 		}
 	}
 }
 
+// handleWrite performs a normal write operation with context checks
 func handleWrite(ctx context.Context, writer *bufio.ReadWriter, msg string) error {
 	// Check context cancellation before writing
 	if ctx.Err() != nil {
@@ -191,6 +214,33 @@ func handleWrite(ctx context.Context, writer *bufio.ReadWriter, msg string) erro
 		return err
 	}
 	return nil
+}
+
+func handleNonBlockingWrite(ctx context.Context, writer *bufio.ReadWriter, msg string) error {
+	writeDone := make(chan error, 1)
+
+	go func() {
+		if _, err := writer.Write([]byte(msg)); err != nil {
+			writeDone <- err
+			return
+		}
+
+		if err := writer.Flush(); err != nil {
+			writeDone <- err
+			return
+		}
+
+		writeDone <- nil
+	}()
+
+	select {
+	case err := <-writeDone:
+		return err
+	case <-time.After(1 * time.Second):
+		return errors.New("non-blocking write/flush timed out")
+	case <-ctx.Done():
+		return ctx.Err() // return the context error (cancellation or deadline exceeded)
+	}
 }
 
 func closeConn(conn net.Conn) {
