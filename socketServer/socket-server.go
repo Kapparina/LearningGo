@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -137,7 +138,7 @@ func handleConnection(ctx context.Context, waitTime time.Duration, conn net.Conn
 func handleWrite(writer *bufio.ReadWriter, msg string) error {
 	if _, err := writer.Write([]byte(msg)); err != nil || writer.Flush() != nil {
 		slog.Error("Error writing data", "error", err)
-		return errors.New("error writing data")
+		return fmt.Errorf("error writing data: %w", err)
 	}
 	slog.Info("Wrote data", "data", msg)
 	return nil
