@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -30,9 +31,12 @@ func Example() {
 	)
 	defer stop()
 
+	// Use WaitGroup to ensure a graceful shutdown
+	var wg sync.WaitGroup
+
 	// Start the server
 	go func() {
-		if err := startServer(ctx); err != nil {
+		if err := startServer(ctx, &wg); err != nil {
 			slog.Error("Server error", "error", err)
 		}
 	}()
@@ -40,9 +44,12 @@ func Example() {
 	// Wait for context cancellation
 	<-ctx.Done()
 	slog.Info("Server received shutdown signal")
+
+	// Wait for all goroutines to finish
+	wg.Wait()
 }
 
-func startServer(ctx context.Context) error {
+func startServer(ctx context.Context, wg *sync.WaitGroup) error {
 	listener, err := createListener()
 	if err != nil {
 		return err
@@ -50,7 +57,7 @@ func startServer(ctx context.Context) error {
 	defer closeListener(listener)
 
 	slog.Info("Server started", "address", listener.Addr(), "protocol", listener.Addr().Network())
-	return serve(ctx, listener)
+	return serve(ctx, listener, wg)
 }
 
 func createListener() (net.Listener, error) {
@@ -74,12 +81,13 @@ func closeListener(listener net.Listener) {
 	}
 }
 
-func serve(ctx context.Context, listener net.Listener) error {
+func serve(ctx context.Context, listener net.Listener, wg *sync.WaitGroup) error {
+	// Semaphore to limit the number of concurrent connections
 	semaphore := make(chan struct{}, 100)
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("Context cancelled, closing listener")
+			slog.Info("Context cancelled, closing listener and exiting serve loop")
 			return listener.Close()
 		default:
 			conn, err := listener.Accept()
@@ -93,9 +101,19 @@ func serve(ctx context.Context, listener net.Listener) error {
 			}
 
 			slog.Info("New connection accepted", "remote_addr", conn.RemoteAddr(), "local_addr", conn.LocalAddr())
-			semaphore <- struct{}{}
-			slog.Info("Connections remaining", "remaining", cap(semaphore)-len(semaphore))
-			go handleConnection(ctx, conn, semaphore)
+
+			select {
+			case semaphore <- struct{}{}:
+				// Increment WaitGroup counter
+				wg.Add(1)
+				go func() {
+					defer wg.Done() // Decrement when goroutine is finished
+					handleConnection(ctx, conn, semaphore)
+				}()
+			case <-ctx.Done():
+				slog.Info("Context cancelled, not accepting new connections")
+				return listener.Close()
+			}
 		}
 	}
 }
@@ -110,9 +128,13 @@ func handleConnection(ctx context.Context, conn net.Conn, semaphore chan struct{
 	buf := make([]byte, 1024)
 
 	for {
+		// Check context cancellation before any major operations
 		if ctx.Err() != nil {
 			slog.Info("Context cancelled for connection")
-			_ = handleWrite(ctx, rw, "Server termination requested, goodbye")
+			err := handleWrite(ctx, rw, "Server termination requested, goodbye")
+			if err != nil {
+				slog.Error("Error sending termination message", "error", err)
+			}
 			return
 		}
 
@@ -138,12 +160,16 @@ func handleConnection(ctx context.Context, conn net.Conn, semaphore chan struct{
 		if n > 0 {
 			data := buf[:n]
 			slog.Info("Received data", "data", string(data))
-			_ = handleWrite(ctx, rw, response)
+			err := handleWrite(ctx, rw, response)
+			if err != nil {
+				slog.Error("Error writing response", "error", err)
+			}
 		}
 	}
 }
 
 func handleWrite(ctx context.Context, writer *bufio.ReadWriter, msg string) error {
+	// Check context cancellation before writing
 	if ctx.Err() != nil {
 		slog.Info("Context cancelled before writing data")
 		return ctx.Err()
@@ -153,6 +179,13 @@ func handleWrite(ctx context.Context, writer *bufio.ReadWriter, msg string) erro
 		slog.Error("Error writing data", "error", err)
 		return err
 	}
+
+	// Check context cancellation again before flushing
+	if ctx.Err() != nil {
+		slog.Info("Context cancelled before flushing data")
+		return ctx.Err()
+	}
+
 	if err := writer.Flush(); err != nil {
 		slog.Error("Error flushing data", "error", err)
 		return err
@@ -161,8 +194,9 @@ func handleWrite(ctx context.Context, writer *bufio.ReadWriter, msg string) erro
 }
 
 func closeConn(conn net.Conn) {
+	// Log connection details before closing
+	slog.Info("Closing connection", "remote_addr", conn.RemoteAddr(), "local_addr", conn.LocalAddr())
 	if err := conn.Close(); err != nil {
 		slog.Error("Error closing connection", "error", err)
 	}
-	slog.Info("Connection closed", "remote_addr", conn.RemoteAddr(), "local_addr", conn.LocalAddr())
 }
