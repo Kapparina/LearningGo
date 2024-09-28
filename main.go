@@ -6,14 +6,16 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"syscall"
 
+	"LearningGo/nonblockingWriter"
 	"LearningGo/socketServer"
 )
 
 func main() {
 	logFile, err := os.OpenFile(
 		filepath.Join(os.TempDir(), "LearningLog.log"),
-		os.O_RDWR|os.O_CREATE|os.O_APPEND,
+		syscall.O_CREAT|syscall.O_WRONLY|os.O_APPEND,
 		0666,
 	)
 	if err != nil {
@@ -24,7 +26,9 @@ func main() {
 	defer func(logFile *os.File) {
 		_ = logFile.Close()
 	}(logFile)
-	log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+	nbLogFileWriter := nonblockingWriter.NewBufWriter(logFile, 20000)
+	nbStdErrWriter := nonblockingWriter.NewBufWriter(os.Stderr, 20000)
+	log.SetOutput(io.MultiWriter(nbLogFileWriter, nbStdErrWriter))
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
 	defer func() {
